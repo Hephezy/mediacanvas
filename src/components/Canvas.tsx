@@ -197,10 +197,10 @@ const Canvas = () => {
 
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // const y = e.clientY - rect.top;
 
     const centerX = CANVAS_WIDTH / 2;
-    const centerY = CANVAS_HEIGHT / 2;
+    // const centerY = CANVAS_HEIGHT / 2;
 
     // Calculate new dimensions based on handle being dragged
     let newWidth = mediaTransform.width;
