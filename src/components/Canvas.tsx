@@ -1,24 +1,86 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useMediaEditor } from '../context/useMediaEditor';
+import type { CanvasMediaItem } from '../../types/index';
 
 const Canvas = () => {
-  const { selectedMedia, scale, rotation } = useMediaEditor();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const mediaElementRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
+  const {
+    canvasItems,
+    // selectedMediaId,
+    selectCanvasItem,
+    updateCanvasItemTransform,
+    selectedCanvasItem
+  } = useMediaEditor();
 
-  // Resize state
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mediaElementsRef = useRef<Map<string, HTMLImageElement | HTMLVideoElement>>(new Map());
+
+  // Interaction state
   const [isResizing, setIsResizing] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
-  const [mediaTransform, setMediaTransform] = useState({
-    width: 0,
-    height: 0,
-    x: 0,
-    y: 0
-  });
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [resizeStart, setResizeStart] = useState<{
+    mouseX: number;
+    mouseY: number;
+    width: number;
+    height: number;
+    scale: number;
+    centerX: number;
+    centerY: number;
+  } | null>(null);
 
   // Canvas dimensions
   const CANVAS_WIDTH = 1000;
-  const CANVAS_HEIGHT = 600;
+  const CANVAS_HEIGHT = 550;
+
+  // Utility functions for coordinate transformations
+  const getTransformedBounds = useCallback((item: CanvasMediaItem) => {
+    const { x, y, width, height, scale, rotation } = item.transform;
+
+    // Scale the dimensions
+    const scaledWidth = width * scale;
+    const scaledHeight = height * scale;
+
+    // Convert rotation to radians
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    // Calculate corners of rotated rectangle
+    const hw = scaledWidth / 2;
+    const hh = scaledHeight / 2;
+
+    const corners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh }
+    ];
+
+    // Apply rotation and translation
+    const rotatedCorners = corners.map(corner => ({
+      x: CANVAS_WIDTH / 2 + x + (corner.x * cos - corner.y * sin),
+      y: CANVAS_HEIGHT / 2 + y + (corner.x * sin + corner.y * cos)
+    }));
+
+    // Find bounding box
+    const minX = Math.min(...rotatedCorners.map(c => c.x));
+    const maxX = Math.max(...rotatedCorners.map(c => c.x));
+    const minY = Math.min(...rotatedCorners.map(c => c.y));
+    const maxY = Math.max(...rotatedCorners.map(c => c.y));
+
+    return {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+      corners: rotatedCorners,
+      center: {
+        x: CANVAS_WIDTH / 2 + x,
+        y: CANVAS_HEIGHT / 2 + y
+      }
+    };
+  }, []);
 
   // Draw grid helper
   const drawGrid = useCallback((ctx: CanvasRenderingContext2D) => {
@@ -47,117 +109,161 @@ const Canvas = () => {
     ctx.restore();
   }, []);
 
-  const drawResizeHandles = useCallback((ctx: CanvasRenderingContext2D, currentWidth: number, currentHeight: number) => {
-    if (!selectedMedia) return;
-
-    const centerX = CANVAS_WIDTH / 2;
-    const centerY = CANVAS_HEIGHT / 2;
-
-    // Use passed dimensions or current transform
-    const width = currentWidth * scale;
-    const height = currentHeight * scale;
-
-    const handleSize = 8;
-    const handles = [
-      { id: 'nw', x: centerX - width / 2 - handleSize / 2, y: centerY - height / 2 - handleSize / 2 },
-      { id: 'ne', x: centerX + width / 2 - handleSize / 2, y: centerY - height / 2 - handleSize / 2 },
-      { id: 'sw', x: centerX - width / 2 - handleSize / 2, y: centerY + height / 2 - handleSize / 2 },
-      { id: 'se', x: centerX + width / 2 - handleSize / 2, y: centerY + height / 2 - handleSize / 2 }
-    ];
+  // Draw rotated bounding box
+  const drawBoundingBox = useCallback((ctx: CanvasRenderingContext2D, item: CanvasMediaItem) => {
+    const bounds = getTransformedBounds(item);
 
     ctx.save();
-    handles.forEach(handle => {
-      ctx.fillStyle = '#3b82f6';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.globalAlpha = 0.8;
 
-      ctx.fillRect(handle.x, handle.y, handleSize, handleSize);
-      ctx.strokeRect(handle.x, handle.y, handleSize, handleSize);
-    });
+    // Draw rotated bounding box using corners
+    ctx.beginPath();
+    ctx.moveTo(bounds.corners[0].x, bounds.corners[0].y);
+    for (let i = 1; i < bounds.corners.length; i++) {
+      ctx.lineTo(bounds.corners[i].x, bounds.corners[i].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
     ctx.restore();
-  }, [selectedMedia, scale]);
+  }, [getTransformedBounds]);
 
-  const drawMedia = useCallback(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    const mediaElement = mediaElementRef.current;
+  // Draw resize handles
+  const drawResizeHandles = useCallback((ctx: CanvasRenderingContext2D, item: CanvasMediaItem) => {
+    const bounds = getTransformedBounds(item);
+    const handleSize = 12; // Slightly larger for better usability
 
-    if (!canvas || !ctx || !mediaElement || !selectedMedia) return;
+    ctx.save();
+    ctx.fillStyle = '#3b82f6';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
 
-    // Clear canvas
-    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    // Draw handles at rotated corners with better visual feedback
+    bounds.corners.forEach((corner) => {
+      // Draw outer circle for better visibility
+      ctx.beginPath();
+      ctx.arc(corner.x, corner.y, handleSize / 2 + 1, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 2;
+      ctx.stroke();
 
-    // Draw grid background first
-    drawGrid(ctx);
+      // Draw inner circle
+      ctx.beginPath();
+      ctx.arc(corner.x, corner.y, handleSize / 2 - 2, 0, 2 * Math.PI);
+      ctx.fillStyle = '#3b82f6';
+      ctx.fill();
+    });
 
-    // Save context for transformations
+    ctx.restore();
+  }, [getTransformedBounds]);
+
+  // Draw single media item
+  const drawMediaItem = useCallback((ctx: CanvasRenderingContext2D, item: CanvasMediaItem) => {
+    const mediaElement = mediaElementsRef.current.get(item.id);
+    if (!mediaElement) return;
+
+    const { x, y, width, height, scale, rotation } = item.transform;
+
     ctx.save();
 
-    // Move to center of canvas for transformations
-    ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
-
-    // Apply transformations
+    // Move to center and apply transformations
+    ctx.translate(CANVAS_WIDTH / 2 + x, CANVAS_HEIGHT / 2 + y);
     ctx.scale(scale, scale);
     ctx.rotate((rotation * Math.PI) / 180);
-
-    // Get media dimensions
-    let mediaWidth = 0;
-    let mediaHeight = 0;
-
-    if (selectedMedia.type === 'image') {
-      const img = mediaElement as HTMLImageElement;
-      mediaWidth = img.naturalWidth || img.width;
-      mediaHeight = img.naturalHeight || img.height;
-    } else {
-      const video = mediaElement as HTMLVideoElement;
-      mediaWidth = video.videoWidth || video.width;
-      mediaHeight = video.videoHeight || video.height;
-    }
-
-    // Use current transform dimensions or calculate initial ones
-    let drawWidth = mediaTransform.width;
-    let drawHeight = mediaTransform.height;
-
-    // Only calculate initial dimensions if not set
-    if (drawWidth === 0 || drawHeight === 0) {
-      const maxWidth = CANVAS_WIDTH * 0.8;
-      const maxHeight = CANVAS_HEIGHT * 0.8;
-
-      drawWidth = mediaWidth;
-      drawHeight = mediaHeight;
-
-      if (mediaWidth > maxWidth || mediaHeight > maxHeight) {
-        const widthRatio = maxWidth / mediaWidth;
-        const heightRatio = maxHeight / mediaHeight;
-        const ratio = Math.min(widthRatio, heightRatio);
-
-        drawWidth = mediaWidth * ratio;
-        drawHeight = mediaHeight * ratio;
-      }
-    }
 
     // Draw media
     ctx.drawImage(
       mediaElement,
-      mediaTransform.x || -drawWidth / 2,
-      mediaTransform.y || -drawHeight / 2,
-      drawWidth,
-      drawHeight
+      -width / 2,
+      -height / 2,
+      width,
+      height
     );
 
-    // Restore context
     ctx.restore();
+  }, []);
 
-    // Draw resize handles if media is selected
-    if (selectedMedia) {
-      drawResizeHandles(ctx, drawWidth, drawHeight);
+  // Main draw function
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Draw grid background
+    drawGrid(ctx);
+
+    // Sort items by z-index and draw them
+    const sortedItems = [...canvasItems].sort((a, b) => a.transform.zIndex - b.transform.zIndex);
+
+    sortedItems.forEach(item => {
+      drawMediaItem(ctx, item);
+    });
+
+    // Draw bounding box and handles for selected item
+    if (selectedCanvasItem) {
+      drawBoundingBox(ctx, selectedCanvasItem);
+      drawResizeHandles(ctx, selectedCanvasItem);
     }
-  }, [selectedMedia, scale, rotation, drawGrid, mediaTransform, drawResizeHandles]);
+  }, [canvasItems, selectedCanvasItem, drawGrid, drawMediaItem, drawBoundingBox, drawResizeHandles]);
 
-  // Handle mouse events for resizing
+  // Check if point is inside item bounds
+  const getItemAtPoint = useCallback((x: number, y: number): CanvasMediaItem | null => {
+    // Check items in reverse z-index order (top to bottom)
+    const sortedItems = [...canvasItems].sort((a, b) => b.transform.zIndex - a.transform.zIndex);
+
+    for (const item of sortedItems) {
+      const bounds = getTransformedBounds(item);
+
+      // Simple bounding box check for now
+      if (x >= bounds.x && x <= bounds.x + bounds.width &&
+        y >= bounds.y && y <= bounds.y + bounds.height) {
+        return item;
+      }
+    }
+
+    return null;
+  }, [canvasItems, getTransformedBounds]);
+
+  // Check if point is on resize handle
+  const getResizeHandle = useCallback((x: number, y: number, item: CanvasMediaItem): string | null => {
+    const bounds = getTransformedBounds(item);
+    const handleSize = 10;
+    const tolerance = 8;
+
+    const handles = [
+      { id: 'nw', corner: bounds.corners[0] },
+      { id: 'ne', corner: bounds.corners[1] },
+      { id: 'se', corner: bounds.corners[2] },
+      { id: 'sw', corner: bounds.corners[3] }
+    ];
+
+    for (const handle of handles) {
+      const dx = x - handle.corner.x;
+      const dy = y - handle.corner.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance <= (handleSize / 2 + tolerance)) {
+        return handle.id;
+      }
+    }
+
+    return null;
+  }, [getTransformedBounds]);
+
+  // Mouse event handlers
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!selectedMedia || mediaTransform.width === 0) return;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -165,200 +271,247 @@ const Canvas = () => {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Check if clicking on resize handles
-    const centerX = CANVAS_WIDTH / 2;
-    const centerY = CANVAS_HEIGHT / 2;
-    const width = mediaTransform.width * scale;
-    const height = mediaTransform.height * scale;
-    const handleSize = 8;
-
-    const handles = [
-      { id: 'nw', x: centerX - width / 2 - handleSize / 2, y: centerY - height / 2 - handleSize / 2 },
-      { id: 'ne', x: centerX + width / 2 - handleSize / 2, y: centerY - height / 2 - handleSize / 2 },
-      { id: 'sw', x: centerX - width / 2 - handleSize / 2, y: centerY + height / 2 - handleSize / 2 },
-      { id: 'se', x: centerX + width / 2 - handleSize / 2, y: centerY + height / 2 - handleSize / 2 }
-    ];
-
-    for (const handle of handles) {
-      if (x >= handle.x && x <= handle.x + handleSize &&
-        y >= handle.y && y <= handle.y + handleSize) {
+    // Check for resize handles first (if item is selected)
+    if (selectedCanvasItem) {
+      const handle = getResizeHandle(x, y, selectedCanvasItem);
+      if (handle) {
         setIsResizing(true);
-        setResizeHandle(handle.id);
+        setResizeHandle(handle);
+
+        // Store initial resize state
+        const bounds = getTransformedBounds(selectedCanvasItem);
+        setResizeStart({
+          mouseX: x,
+          mouseY: y,
+          width: selectedCanvasItem.transform.width,
+          height: selectedCanvasItem.transform.height,
+          scale: selectedCanvasItem.transform.scale,
+          centerX: bounds.center.x,
+          centerY: bounds.center.y
+        });
+
+        e.preventDefault();
         return;
       }
     }
-  }, [selectedMedia, mediaTransform, scale]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isResizing || !resizeHandle || !selectedMedia) return;
+    // Check for item selection
+    const clickedItem = getItemAtPoint(x, y);
+    if (clickedItem) {
+      selectCanvasItem(clickedItem.id);
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    // const y = e.clientY - rect.top;
-
-    const centerX = CANVAS_WIDTH / 2;
-    // const centerY = CANVAS_HEIGHT / 2;
-
-    // Calculate new dimensions based on handle being dragged
-    let newWidth = mediaTransform.width;
-    let newHeight = mediaTransform.height;
-
-    const aspectRatio = mediaTransform.width / mediaTransform.height;
-
-    switch (resizeHandle) {
-      case 'se':
-        newWidth = Math.max(50, (x - centerX + mediaTransform.width / 2) * 2 / scale);
-        newHeight = newWidth / aspectRatio;
-        break;
-      case 'sw':
-        newWidth = Math.max(50, (centerX - x + mediaTransform.width / 2) * 2 / scale);
-        newHeight = newWidth / aspectRatio;
-        break;
-      case 'ne':
-        newWidth = Math.max(50, (x - centerX + mediaTransform.width / 2) * 2 / scale);
-        newHeight = newWidth / aspectRatio;
-        break;
-      case 'nw':
-        newWidth = Math.max(50, (centerX - x + mediaTransform.width / 2) * 2 / scale);
-        newHeight = newWidth / aspectRatio;
-        break;
-    }
-
-    setMediaTransform(prev => ({
-      ...prev,
-      width: newWidth,
-      height: newHeight,
-      x: -newWidth / 2,
-      y: -newHeight / 2
-    }));
-  }, [isResizing, resizeHandle, selectedMedia, mediaTransform, scale]);
-
-  const handleMouseUp = useCallback(() => {
-    setIsResizing(false);
-    setResizeHandle(null);
-  }, []);
-
-  // Load and draw media when selected media changes
-  useEffect(() => {
-    if (!selectedMedia) {
-      // Clear canvas when no media selected
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (canvas && ctx) {
-        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-        drawGrid(ctx);
-      }
-      setMediaTransform({ width: 0, height: 0, x: 0, y: 0 });
+      // Start dragging
+      setIsDragging(true);
+      setDragStart({ x, y });
+      e.preventDefault();
       return;
     }
 
-    // Create media element
-    if (selectedMedia.type === 'image') {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        mediaElementRef.current = img;
+    // Click on empty space - deselect
+    selectCanvasItem('');
+  }, [selectedCanvasItem, getResizeHandle, getItemAtPoint, selectCanvasItem, getTransformedBounds]);
 
-        // Calculate initial dimensions
-        const maxWidth = CANVAS_WIDTH * 0.8;
-        const maxHeight = CANVAS_HEIGHT * 0.8;
-        let drawWidth = img.naturalWidth || img.width;
-        let drawHeight = img.naturalHeight || img.height;
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !selectedCanvasItem) return;
 
-        if (drawWidth > maxWidth || drawHeight > maxHeight) {
-          const widthRatio = maxWidth / drawWidth;
-          const heightRatio = maxHeight / drawHeight;
-          const ratio = Math.min(widthRatio, heightRatio);
-          drawWidth = drawWidth * ratio;
-          drawHeight = drawHeight * ratio;
-        }
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-        setMediaTransform({
-          width: drawWidth,
-          height: drawHeight,
-          x: -drawWidth / 2,
-          y: -drawHeight / 2
-        });
-      };
-      img.onerror = (error) => {
-        console.error('Error loading image:', error);
-      };
-      img.src = selectedMedia.url;
-    } else {
-      const video = document.createElement('video');
-      video.crossOrigin = 'anonymous';
-      video.muted = true;
-      video.preload = 'metadata';
+    if (isResizing && resizeHandle && resizeStart) {
+      // Handle resizing with proper scaling
+      // const deltaX = mouseX - resizeStart.mouseX;
+      // const deltaY = mouseY - resizeStart.mouseY;
 
-      video.onloadedmetadata = () => {
-        // Set video to first frame
-        video.currentTime = 0.1;
-      };
+      // Calculate distance from original mouse position
+      // const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-      video.onloadeddata = () => {
-        mediaElementRef.current = video;
+      // Determine resize direction based on handle and mouse movement
+      // const scaleFactor = 1;
+      const centerX = resizeStart.centerX;
+      const centerY = resizeStart.centerY;
 
-        // Calculate initial dimensions
-        const maxWidth = CANVAS_WIDTH * 0.8;
-        const maxHeight = CANVAS_HEIGHT * 0.8;
-        let drawWidth = video.videoWidth || video.width;
-        let drawHeight = video.videoHeight || video.height;
+      // Calculate distance from center to current mouse position
+      const currentDistanceFromCenter = Math.sqrt(
+        (mouseX - centerX) ** 2 + (mouseY - centerY) ** 2
+      );
 
-        if (drawWidth > maxWidth || drawHeight > maxHeight) {
-          const widthRatio = maxWidth / drawWidth;
-          const heightRatio = maxHeight / drawHeight;
-          const ratio = Math.min(widthRatio, heightRatio);
-          drawWidth = drawWidth * ratio;
-          drawHeight = drawHeight * ratio;
-        }
+      // Calculate original distance from center to handle
+      const originalCornerDistance = Math.sqrt(
+        (resizeStart.width / 2) ** 2 + (resizeStart.height / 2) ** 2
+      ) * resizeStart.scale;
 
-        setMediaTransform({
-          width: drawWidth,
-          height: drawHeight,
-          x: -drawWidth / 2,
-          y: -drawHeight / 2
-        });
-      };
+      // Calculate new scale based on distance ratio
+      const newScale = Math.max(0.1, Math.min(5, currentDistanceFromCenter / originalCornerDistance * resizeStart.scale));
 
-      video.onerror = (error) => {
-        console.error('Error loading video:', error);
-      };
+      // Apply constraint based on handle direction for more natural resizing
+      let constrainedScale = newScale;
 
-      video.src = selectedMedia.url;
+      switch (resizeHandle) {
+        case 'se': // Southeast - natural resize
+          constrainedScale = newScale;
+          break;
+        case 'nw': // Northwest - opposite corner
+          constrainedScale = newScale;
+          break;
+        case 'ne': // Northeast
+        case 'sw': // Southwest
+          constrainedScale = newScale;
+          break;
+      }
+
+      updateCanvasItemTransform(selectedCanvasItem.id, {
+        scale: constrainedScale
+      });
+
+    } else if (isDragging && dragStart) {
+      // Handle dragging
+      const deltaX = mouseX - dragStart.x;
+      const deltaY = mouseY - dragStart.y;
+
+      updateCanvasItemTransform(selectedCanvasItem.id, {
+        x: selectedCanvasItem.transform.x + deltaX,
+        y: selectedCanvasItem.transform.y + deltaY
+      });
+
+      setDragStart({ x: mouseX, y: mouseY });
     }
-  }, [selectedMedia, drawGrid]);
 
-  // Redraw when transformations change (only when we have valid transform data)
+    // Update cursor based on what's under mouse
+    if (!isResizing && !isDragging && selectedCanvasItem) {
+      const handle = getResizeHandle(mouseX, mouseY, selectedCanvasItem);
+      if (handle) {
+        canvas.style.cursor = 'nw-resize';
+      } else if (getItemAtPoint(mouseX, mouseY)) {
+        canvas.style.cursor = 'move';
+      } else {
+        canvas.style.cursor = 'default';
+      }
+    }
+
+  }, [selectedCanvasItem, isResizing, isDragging, resizeHandle, dragStart, resizeStart, updateCanvasItemTransform, getResizeHandle, getItemAtPoint]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsResizing(false);
+    setIsDragging(false);
+    setResizeHandle(null);
+    setDragStart(null);
+    setResizeStart(null);
+
+    // Reset cursor
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.style.cursor = 'default';
+    }
+  }, []);
+
+  // Load media elements
   useEffect(() => {
-    if (selectedMedia && mediaElementRef.current && mediaTransform.width > 0) {
-      drawMedia();
-    }
-  }, [scale, rotation, drawMedia, selectedMedia, mediaTransform]);
+    canvasItems.forEach(item => {
+      if (!mediaElementsRef.current.has(item.id)) {
+        if (item.type === 'image') {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            mediaElementsRef.current.set(item.id, img);
 
-  // Handle canvas resize
+            // Update transform with actual dimensions if not set properly
+            if (item.transform.width === 300 && item.transform.height === 200) {
+              const maxWidth = CANVAS_WIDTH * 0.3;
+              const maxHeight = CANVAS_HEIGHT * 0.3;
+
+              let drawWidth = img.naturalWidth || img.width;
+              let drawHeight = img.naturalHeight || img.height;
+
+              if (drawWidth > maxWidth || drawHeight > maxHeight) {
+                const widthRatio = maxWidth / drawWidth;
+                const heightRatio = maxHeight / drawHeight;
+                const ratio = Math.min(widthRatio, heightRatio);
+                drawWidth = drawWidth * ratio;
+                drawHeight = drawHeight * ratio;
+              }
+
+              updateCanvasItemTransform(item.id, {
+                width: drawWidth,
+                height: drawHeight
+              });
+            }
+
+            drawCanvas();
+          };
+          img.src = item.url;
+        } else {
+          const video = document.createElement('video');
+          video.crossOrigin = 'anonymous';
+          video.muted = true;
+          video.preload = 'metadata';
+
+          video.onloadeddata = () => {
+            video.currentTime = 0.1;
+            mediaElementsRef.current.set(item.id, video);
+
+            // Update transform with actual dimensions if not set properly
+            if (item.transform.width === 300 && item.transform.height === 200) {
+              const maxWidth = CANVAS_WIDTH * 0.3;
+              const maxHeight = CANVAS_HEIGHT * 0.3;
+
+              let drawWidth = video.videoWidth || video.width;
+              let drawHeight = video.videoHeight || video.height;
+
+              if (drawWidth > maxWidth || drawHeight > maxHeight) {
+                const widthRatio = maxWidth / drawWidth;
+                const heightRatio = maxHeight / drawHeight;
+                const ratio = Math.min(widthRatio, heightRatio);
+                drawWidth = drawWidth * ratio;
+                drawHeight = drawHeight * ratio;
+              }
+
+              updateCanvasItemTransform(item.id, {
+                width: drawWidth,
+                height: drawHeight
+              });
+            }
+
+            drawCanvas();
+          };
+
+          video.src = item.url;
+        }
+      }
+    });
+
+    // Clean up removed items
+    const currentIds = new Set(canvasItems.map(item => item.id));
+    const elementIds = Array.from(mediaElementsRef.current.keys());
+
+    elementIds.forEach(id => {
+      if (!currentIds.has(id)) {
+        mediaElementsRef.current.delete(id);
+      }
+    });
+  }, [canvasItems, updateCanvasItemTransform, drawCanvas]);
+
+  // Redraw when items change
+  useEffect(() => {
+    drawCanvas();
+  }, [drawCanvas]);
+
+  // Initialize canvas
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.width = CANVAS_WIDTH;
       canvas.height = CANVAS_HEIGHT;
-
-      // Initial grid draw
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        drawGrid(ctx);
-      }
+      drawCanvas();
     }
-  }, [drawGrid]);
+  }, [drawCanvas]);
 
-  // Export canvas as image
+  // Export function
   const exportCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Create a temporary canvas without resize handles
     const tempCanvas = document.createElement('canvas');
     const tempCtx = tempCanvas.getContext('2d');
     if (!tempCtx) return;
@@ -366,47 +519,21 @@ const Canvas = () => {
     tempCanvas.width = CANVAS_WIDTH;
     tempCanvas.height = CANVAS_HEIGHT;
 
-    // Draw everything except resize handles
-    const mediaElement = mediaElementRef.current;
-    if (mediaElement && selectedMedia) {
-      // Clear canvas
-      tempCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    // Clear and draw grid
+    tempCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    drawGrid(tempCtx);
 
-      // Draw grid background
-      drawGrid(tempCtx);
-
-      // Save context for transformations
-      tempCtx.save();
-
-      // Move to center of canvas for transformations
-      tempCtx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
-
-      // Apply transformations
-      tempCtx.scale(scale, scale);
-      tempCtx.rotate((rotation * Math.PI) / 180);
-
-      // Draw media
-      tempCtx.drawImage(
-        mediaElement,
-        mediaTransform.x || -mediaTransform.width / 2,
-        mediaTransform.y || -mediaTransform.height / 2,
-        mediaTransform.width,
-        mediaTransform.height
-      );
-
-      // Restore context
-      tempCtx.restore();
-    }
+    // Draw all items without handles
+    const sortedItems = [...canvasItems].sort((a, b) => a.transform.zIndex - b.transform.zIndex);
+    sortedItems.forEach(item => {
+      drawMediaItem(tempCtx, item);
+    });
 
     const link = document.createElement('a');
-    const filename = selectedMedia ?
-      `edited-${selectedMedia.name.split('.')[0]}.png` :
-      'canvas-export.png';
-
-    link.download = filename;
+    link.download = 'canvas-export.png';
     link.href = tempCanvas.toDataURL('image/png');
     link.click();
-  }, [selectedMedia, scale, rotation, mediaTransform, drawGrid]);
+  }, [canvasItems, drawGrid, drawMediaItem]);
 
   return (
     <div className="flex-1 relative overflow-hidden bg-gray-900 flex flex-col items-center justify-center p-4">
@@ -414,7 +541,9 @@ const Canvas = () => {
       <div className="relative">
         <canvas
           ref={canvasRef}
-          className={`border-2 border-gray-600 bg-white shadow-lg ${isResizing ? 'cursor-nw-resize' : 'cursor-crosshair'
+          className={`border-2 border-gray-600 bg-white shadow-lg ${isDragging ? 'cursor-move' :
+            isResizing ? 'cursor-nw-resize' :
+              'cursor-crosshair'
             }`}
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
@@ -425,20 +554,22 @@ const Canvas = () => {
         />
 
         {/* Canvas overlay info */}
-        {selectedMedia && (
+        {selectedCanvasItem && (
           <div className="absolute bottom-4 left-4 bg-black/70 text-white px-3 py-2 rounded-lg text-sm">
-            <div className="font-medium">{selectedMedia.name}</div>
+            <div className="font-medium">{selectedCanvasItem.name}</div>
             <div className="text-xs text-gray-300">
-              {selectedMedia.type} • Scale: {Math.round(scale * 100)}% • Rotation: {rotation}°
-              {mediaTransform.width > 0 && (
-                <> • Size: {Math.round(mediaTransform.width)}×{Math.round(mediaTransform.height)}</>
-              )}
+              {selectedCanvasItem.type} • Scale: {Math.round(selectedCanvasItem.transform.scale * 100)}% •
+              Rotation: {selectedCanvasItem.transform.rotation}°
+            </div>
+            <div className="text-xs text-gray-300">
+              Position: ({Math.round(selectedCanvasItem.transform.x)}, {Math.round(selectedCanvasItem.transform.y)}) •
+              Size: {Math.round(selectedCanvasItem.transform.width)}×{Math.round(selectedCanvasItem.transform.height)}
             </div>
           </div>
         )}
 
         {/* Export button */}
-        {selectedMedia && (
+        {canvasItems.length > 0 && (
           <button
             onClick={exportCanvas}
             className="absolute top-4 right-4 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg"
@@ -450,12 +581,12 @@ const Canvas = () => {
       </div>
 
       {/* Empty state */}
-      {!selectedMedia && (
+      {canvasItems.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center p-8">
-            <div className="text-gray-400 text-xl mb-2">No media selected</div>
+            <div className="text-gray-400 text-xl mb-2">No media on canvas</div>
             <div className="text-gray-500 text-sm">
-              Upload files from the sidebar to get started
+              Upload files and add them to canvas to get started
             </div>
           </div>
         </div>
@@ -464,21 +595,21 @@ const Canvas = () => {
       {/* Canvas info bar */}
       <div className="mt-4 text-center text-gray-400 text-sm">
         Canvas: {CANVAS_WIDTH} × {CANVAS_HEIGHT}px
-        {selectedMedia && (
+        {canvasItems.length > 0 && (
           <span className="ml-4">
-            • Media: {selectedMedia.type}
-            • Transforms: {Math.round(scale * 100)}% scale, {rotation}° rotation
-            {mediaTransform.width > 0 && (
-              <> • Custom size: {Math.round(mediaTransform.width)}×{Math.round(mediaTransform.height)}</>
+            • Items: {canvasItems.length}
+            {selectedCanvasItem && (
+              <> • Selected: {selectedCanvasItem.name}</>
             )}
           </span>
         )}
       </div>
 
       {/* Instructions */}
-      {selectedMedia && (
+      {canvasItems.length > 0 && (
         <div className="mt-2 text-center text-gray-500 text-xs">
-          Drag the blue squares to resize • Use sidebar controls for scale and rotation
+          <div>🔵 Blue squares: Resize handles • 🟢 Green dashed box: Rotated bounding box</div>
+          <div>Click to select • Drag to move • Drag handles to resize • Use sidebar for precise control</div>
         </div>
       )}
     </div>

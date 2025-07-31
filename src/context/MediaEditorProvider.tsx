@@ -1,6 +1,6 @@
 import { useState, useCallback, type ReactNode } from 'react';
 import { MediaEditorContext } from './MediaContext';
-import type { MediaEditorContextType, MediaItem } from '../../types/index';
+import type { MediaEditorContextType, MediaItem, CanvasMediaItem, MediaTransform } from '../../types/index';
 
 interface MediaEditorProviderProps {
   children: ReactNode;
@@ -8,28 +8,26 @@ interface MediaEditorProviderProps {
 
 export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
+  const [canvasItems, setCanvasItems] = useState<CanvasMediaItem[]>([]);
   const [selectedMediaId, setSelectedMediaId] = useState<string | null>(null);
-  const [scale, setScale] = useState<number>(1);
-  const [rotation, setRotation] = useState<number>(0);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [history, setHistory] = useState<Array<{
-    mediaItems: MediaItem[];
+    canvasItems: CanvasMediaItem[];
     selectedMediaId: string | null;
-    scale: number;
-    rotation: number;
   }>>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
-  // Get currently selected media
+  // Get currently selected media from sidebar
   const selectedMedia = mediaItems.find(item => item.id === selectedMediaId) || null;
+
+  // Get currently selected canvas item
+  const selectedCanvasItem = canvasItems.find(item => item.id === selectedMediaId) || null;
 
   // Add to history
   const addToHistory = useCallback(() => {
     const newHistoryItem = {
-      mediaItems: [...mediaItems],
-      selectedMediaId,
-      scale,
-      rotation
+      canvasItems: canvasItems.map(item => ({ ...item })),
+      selectedMediaId
     };
 
     const newHistory = history.slice(0, historyIndex + 1);
@@ -43,7 +41,7 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
     }
 
     setHistory(newHistory);
-  }, [mediaItems, selectedMediaId, scale, rotation, history, historyIndex]);
+  }, [canvasItems, selectedMediaId, history, historyIndex]);
 
   const handleFilesSelect = useCallback((files: FileList): void => {
     const newMediaItems: MediaItem[] = [];
@@ -64,34 +62,75 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
     });
 
     if (newMediaItems.length > 0) {
-      addToHistory();
       setMediaItems(prev => [...prev, ...newMediaItems]);
       // Auto-select the first uploaded item if none selected
       if (!selectedMediaId && newMediaItems.length > 0) {
         setSelectedMediaId(newMediaItems[0].id);
-        setScale(1);
-        setRotation(0);
       }
     }
-  }, [selectedMediaId, addToHistory]);
+  }, [selectedMediaId]);
 
   const selectMedia = useCallback((id: string): void => {
-    addToHistory();
     setSelectedMediaId(id);
-    setScale(1);
-    setRotation(0);
-  }, [addToHistory]);
-
-  const handleScaleChange = useCallback((delta: number): void => {
-    setScale(prev => Math.max(0.1, Math.min(3, prev + delta)));
   }, []);
 
-  const handleRotation = useCallback((degrees: number): void => {
-    setRotation(prev => (prev + degrees) % 360);
+  const addToCanvas = useCallback((mediaId: string): void => {
+    const mediaItem = mediaItems.find(item => item.id === mediaId);
+    if (!mediaItem) return;
+
+    // Check if item is already on canvas
+    const existingItem = canvasItems.find(item => item.id === mediaId);
+    if (existingItem) {
+      setSelectedMediaId(mediaId);
+      return;
+    }
+
+    addToHistory();
+
+    // Create canvas item with default transform
+    const canvasItem: CanvasMediaItem = {
+      ...mediaItem,
+      transform: {
+        x: 0, // Center position
+        y: 0, // Center position
+        width: 300, // Default size, will be adjusted when element loads
+        height: 200,
+        scale: 1,
+        rotation: 0,
+        zIndex: canvasItems.length
+      }
+    };
+
+    setCanvasItems(prev => [...prev, canvasItem]);
+    setSelectedMediaId(mediaId);
+  }, [mediaItems, canvasItems, addToHistory]);
+
+  const selectCanvasItem = useCallback((id: string): void => {
+    setSelectedMediaId(id);
   }, []);
+
+  const updateCanvasItemTransform = useCallback((id: string, transform: Partial<MediaTransform>): void => {
+    setCanvasItems(prev => prev.map(item =>
+      item.id === id
+        ? { ...item, transform: { ...item.transform, ...transform } }
+        : item
+    ));
+  }, []);
+
+  const removeFromCanvas = useCallback((id: string): void => {
+    addToHistory();
+    setCanvasItems(prev => prev.filter(item => item.id !== id));
+
+    if (selectedMediaId === id) {
+      const remainingItems = canvasItems.filter(item => item.id !== id);
+      setSelectedMediaId(remainingItems.length > 0 ? remainingItems[0].id : null);
+    }
+  }, [selectedMediaId, canvasItems, addToHistory]);
 
   const removeMedia = useCallback((id: string): void => {
     addToHistory();
+
+    // Remove from media items
     setMediaItems(prev => {
       const filtered = prev.filter(item => {
         if (item.id === id) {
@@ -103,11 +142,12 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
       return filtered;
     });
 
+    // Remove from canvas if present
+    setCanvasItems(prev => prev.filter(item => item.id !== id));
+
     if (selectedMediaId === id) {
       const remainingItems = mediaItems.filter(item => item.id !== id);
       setSelectedMediaId(remainingItems.length > 0 ? remainingItems[0].id : null);
-      setScale(1);
-      setRotation(0);
     }
   }, [selectedMediaId, mediaItems, addToHistory]);
 
@@ -115,18 +155,15 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
     addToHistory();
     mediaItems.forEach(item => URL.revokeObjectURL(item.url));
     setMediaItems([]);
+    setCanvasItems([]);
     setSelectedMediaId(null);
-    setScale(1);
-    setRotation(0);
   }, [mediaItems, addToHistory]);
 
   const undo = useCallback((): void => {
     if (historyIndex > 0) {
       const previousState = history[historyIndex - 1];
-      setMediaItems(previousState.mediaItems);
+      setCanvasItems(previousState.canvasItems);
       setSelectedMediaId(previousState.selectedMediaId);
-      setScale(previousState.scale);
-      setRotation(previousState.rotation);
       setHistoryIndex(prev => prev - 1);
     }
   }, [history, historyIndex]);
@@ -134,10 +171,8 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
   const redo = useCallback((): void => {
     if (historyIndex < history.length - 1) {
       const nextState = history[historyIndex + 1];
-      setMediaItems(nextState.mediaItems);
+      setCanvasItems(nextState.canvasItems);
       setSelectedMediaId(nextState.selectedMediaId);
-      setScale(nextState.scale);
-      setRotation(nextState.rotation);
       setHistoryIndex(prev => prev + 1);
     }
   }, [history, historyIndex]);
@@ -148,18 +183,20 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
   const value: MediaEditorContextType = {
     // State
     mediaItems,
+    canvasItems,
     selectedMediaId,
     selectedMedia,
-    scale,
-    rotation,
+    selectedCanvasItem,
     isDragging,
     history,
     historyIndex,
     // Actions
     handleFilesSelect,
     selectMedia,
-    handleScaleChange,
-    handleRotation,
+    addToCanvas,
+    selectCanvasItem,
+    updateCanvasItemTransform,
+    removeFromCanvas,
     clearAllMedia,
     removeMedia,
     setIsDragging,

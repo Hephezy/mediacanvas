@@ -1,4 +1,4 @@
-// Types
+// Enhanced Types for Multi-Media Canvas
 export interface MediaItem {
   id: string;
   file: File;
@@ -8,18 +8,31 @@ export interface MediaItem {
   size: number;
 }
 
-export interface MediaEditorState {
-  mediaItems: MediaItem[];
-  selectedMediaId: string | null;
-  selectedMedia: MediaItem | null;
+export interface MediaTransform {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   scale: number;
   rotation: number;
+  zIndex: number;
+}
+
+export interface CanvasMediaItem extends MediaItem {
+  transform: MediaTransform;
+  element?: HTMLImageElement | HTMLVideoElement;
+}
+
+export interface MediaEditorState {
+  mediaItems: MediaItem[];
+  canvasItems: CanvasMediaItem[];
+  selectedMediaId: string | null;
+  selectedMedia: MediaItem | null;
+  selectedCanvasItem: CanvasMediaItem | null;
   isDragging: boolean;
   history: Array<{
-    mediaItems: MediaItem[];
+    canvasItems: CanvasMediaItem[];
     selectedMediaId: string | null;
-    scale: number;
-    rotation: number;
   }>;
   historyIndex: number;
 }
@@ -27,8 +40,13 @@ export interface MediaEditorState {
 export interface MediaEditorActions {
   handleFilesSelect: (files: FileList) => void;
   selectMedia: (id: string) => void;
-  handleScaleChange: (delta: number) => void;
-  handleRotation: (degrees: number) => void;
+  addToCanvas: (mediaId: string) => void;
+  selectCanvasItem: (id: string) => void;
+  updateCanvasItemTransform: (
+    id: string,
+    transform: Partial<MediaTransform>
+  ) => void;
+  removeFromCanvas: (id: string) => void;
   clearAllMedia: () => void;
   removeMedia: (id: string) => void;
   setIsDragging: (isDragging: boolean) => void;

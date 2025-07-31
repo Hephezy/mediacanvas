@@ -10,7 +10,7 @@ function App() {
     <MediaEditorProvider>
       <section className='flex flex-row w-full relative bg-gray-800 h-screen'>
         <SideBar />
-        <div className='flex flex-col w-full'>
+        <div className='flex flex-col h-full w-full'>
           <TopNavbar />
           <Canvas />
         </div>
