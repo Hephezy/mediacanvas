@@ -11,37 +11,12 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
   const [canvasItems, setCanvasItems] = useState<CanvasMediaItem[]>([]);
   const [selectedMediaId, setSelectedMediaId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [history, setHistory] = useState<Array<{
-    canvasItems: CanvasMediaItem[];
-    selectedMediaId: string | null;
-  }>>([]);
-  const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
   // Get currently selected media from sidebar
   const selectedMedia = mediaItems.find(item => item.id === selectedMediaId) || null;
 
   // Get currently selected canvas item
   const selectedCanvasItem = canvasItems.find(item => item.id === selectedMediaId) || null;
-
-  // Add to history
-  const addToHistory = useCallback(() => {
-    const newHistoryItem = {
-      canvasItems: canvasItems.map(item => ({ ...item })),
-      selectedMediaId
-    };
-
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(newHistoryItem);
-
-    // Keep only last 50 history items
-    if (newHistory.length > 50) {
-      newHistory.shift();
-    } else {
-      setHistoryIndex(prev => prev + 1);
-    }
-
-    setHistory(newHistory);
-  }, [canvasItems, selectedMediaId, history, historyIndex]);
 
   const handleFilesSelect = useCallback((files: FileList): void => {
     const newMediaItems: MediaItem[] = [];
@@ -85,8 +60,6 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
       return;
     }
 
-    addToHistory();
-
     // Create canvas item with default transform
     const canvasItem: CanvasMediaItem = {
       ...mediaItem,
@@ -103,7 +76,7 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
 
     setCanvasItems(prev => [...prev, canvasItem]);
     setSelectedMediaId(mediaId);
-  }, [mediaItems, canvasItems, addToHistory]);
+  }, [mediaItems, canvasItems]);
 
   const selectCanvasItem = useCallback((id: string): void => {
     setSelectedMediaId(id);
@@ -118,18 +91,15 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
   }, []);
 
   const removeFromCanvas = useCallback((id: string): void => {
-    addToHistory();
     setCanvasItems(prev => prev.filter(item => item.id !== id));
 
     if (selectedMediaId === id) {
       const remainingItems = canvasItems.filter(item => item.id !== id);
       setSelectedMediaId(remainingItems.length > 0 ? remainingItems[0].id : null);
     }
-  }, [selectedMediaId, canvasItems, addToHistory]);
+  }, [selectedMediaId, canvasItems]);
 
   const removeMedia = useCallback((id: string): void => {
-    addToHistory();
-
     // Remove from media items
     setMediaItems(prev => {
       const filtered = prev.filter(item => {
@@ -149,36 +119,14 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
       const remainingItems = mediaItems.filter(item => item.id !== id);
       setSelectedMediaId(remainingItems.length > 0 ? remainingItems[0].id : null);
     }
-  }, [selectedMediaId, mediaItems, addToHistory]);
+  }, [selectedMediaId, mediaItems]);
 
   const clearAllMedia = useCallback((): void => {
-    addToHistory();
     mediaItems.forEach(item => URL.revokeObjectURL(item.url));
     setMediaItems([]);
     setCanvasItems([]);
     setSelectedMediaId(null);
-  }, [mediaItems, addToHistory]);
-
-  const undo = useCallback((): void => {
-    if (historyIndex > 0) {
-      const previousState = history[historyIndex - 1];
-      setCanvasItems(previousState.canvasItems);
-      setSelectedMediaId(previousState.selectedMediaId);
-      setHistoryIndex(prev => prev - 1);
-    }
-  }, [history, historyIndex]);
-
-  const redo = useCallback((): void => {
-    if (historyIndex < history.length - 1) {
-      const nextState = history[historyIndex + 1];
-      setCanvasItems(nextState.canvasItems);
-      setSelectedMediaId(nextState.selectedMediaId);
-      setHistoryIndex(prev => prev + 1);
-    }
-  }, [history, historyIndex]);
-
-  const canUndo = historyIndex > 0;
-  const canRedo = historyIndex < history.length - 1;
+  }, [mediaItems]);
 
   const value: MediaEditorContextType = {
     // State
@@ -188,8 +136,8 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
     selectedMedia,
     selectedCanvasItem,
     isDragging,
-    history,
-    historyIndex,
+    history: [], // Empty array for compatibility
+    historyIndex: -1, // Default value for compatibility
     // Actions
     handleFilesSelect,
     selectMedia,
@@ -200,10 +148,10 @@ export const MediaEditorProvider = ({ children }: MediaEditorProviderProps) => {
     clearAllMedia,
     removeMedia,
     setIsDragging,
-    undo,
-    redo,
-    canUndo,
-    canRedo,
+    undo: () => { }, // No-op function for compatibility
+    redo: () => { }, // No-op function for compatibility
+    canUndo: false, // Always false
+    canRedo: false, // Always false
   };
 
   return (

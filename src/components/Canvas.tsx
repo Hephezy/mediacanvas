@@ -5,7 +5,6 @@ import type { CanvasMediaItem } from '../../types/index';
 const Canvas = () => {
   const {
     canvasItems,
-    // selectedMediaId,
     selectCanvasItem,
     updateCanvasItemTransform,
     selectedCanvasItem
@@ -16,6 +15,7 @@ const Canvas = () => {
 
   // Interaction state
   const [isResizing, setIsResizing] = useState(false);
+  const [isRotating, setIsRotating] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
@@ -25,6 +25,13 @@ const Canvas = () => {
     width: number;
     height: number;
     scale: number;
+    centerX: number;
+    centerY: number;
+  } | null>(null);
+  const [rotationStart, setRotationStart] = useState<{
+    mouseX: number;
+    mouseY: number;
+    rotation: number;
     centerX: number;
     centerY: number;
   } | null>(null);
@@ -131,23 +138,20 @@ const Canvas = () => {
     ctx.restore();
   }, [getTransformedBounds]);
 
-  // Draw resize handles
-  const drawResizeHandles = useCallback((ctx: CanvasRenderingContext2D, item: CanvasMediaItem) => {
+  // Draw resize handles and rotation handle
+  const drawHandles = useCallback((ctx: CanvasRenderingContext2D, item: CanvasMediaItem) => {
     const bounds = getTransformedBounds(item);
-    const handleSize = 12; // Slightly larger for better usability
+    const handleSize = 12;
 
     ctx.save();
-    ctx.fillStyle = '#3b82f6';
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
     ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
     ctx.shadowBlur = 6;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
 
-    // Draw handles at rotated corners with better visual feedback
+    // Draw resize handles at rotated corners
     bounds.corners.forEach((corner) => {
-      // Draw outer circle for better visibility
+      // Outer circle
       ctx.beginPath();
       ctx.arc(corner.x, corner.y, handleSize / 2 + 1, 0, 2 * Math.PI);
       ctx.fillStyle = '#ffffff';
@@ -156,12 +160,68 @@ const Canvas = () => {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Draw inner circle
+      // Inner circle
       ctx.beginPath();
       ctx.arc(corner.x, corner.y, handleSize / 2 - 2, 0, 2 * Math.PI);
       ctx.fillStyle = '#3b82f6';
       ctx.fill();
     });
+
+    // Draw rotation handle - positioned above the top center
+    const topCenter = {
+      x: (bounds.corners[0].x + bounds.corners[1].x) / 2,
+      y: (bounds.corners[0].y + bounds.corners[1].y) / 2
+    };
+
+    // Calculate direction vector for rotation handle placement
+    const dx = bounds.corners[1].x - bounds.corners[0].x;
+    const dy = bounds.corners[1].y - bounds.corners[0].y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const normalX = -dy / length; // Perpendicular to top edge
+    const normalY = dx / length;
+
+    const rotationHandleDistance = 30;
+    const rotationHandle = {
+      x: topCenter.x + normalX * rotationHandleDistance,
+      y: topCenter.y + normalY * rotationHandleDistance
+    };
+
+    // Draw line from top center to rotation handle
+    ctx.beginPath();
+    ctx.moveTo(topCenter.x, topCenter.y);
+    ctx.lineTo(rotationHandle.x, rotationHandle.y);
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw rotation handle (circular with rotation icon)
+    ctx.beginPath();
+    ctx.arc(rotationHandle.x, rotationHandle.y, handleSize / 2 + 2, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(rotationHandle.x, rotationHandle.y, handleSize / 2 - 1, 0, 2 * Math.PI);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fill();
+
+    // Draw small rotation arrows in the handle
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    const arrowSize = 3;
+
+    // Left arrow
+    ctx.beginPath();
+    ctx.arc(rotationHandle.x - 2, rotationHandle.y, arrowSize, Math.PI * 0.7, Math.PI * 1.3);
+    ctx.stroke();
+
+    // Right arrow
+    ctx.beginPath();
+    ctx.arc(rotationHandle.x + 2, rotationHandle.y, arrowSize, Math.PI * 1.7, Math.PI * 0.3);
+    ctx.stroke();
 
     ctx.restore();
   }, [getTransformedBounds]);
@@ -214,19 +274,17 @@ const Canvas = () => {
     // Draw bounding box and handles for selected item
     if (selectedCanvasItem) {
       drawBoundingBox(ctx, selectedCanvasItem);
-      drawResizeHandles(ctx, selectedCanvasItem);
+      drawHandles(ctx, selectedCanvasItem);
     }
-  }, [canvasItems, selectedCanvasItem, drawGrid, drawMediaItem, drawBoundingBox, drawResizeHandles]);
+  }, [canvasItems, selectedCanvasItem, drawGrid, drawMediaItem, drawBoundingBox, drawHandles]);
 
   // Check if point is inside item bounds
   const getItemAtPoint = useCallback((x: number, y: number): CanvasMediaItem | null => {
-    // Check items in reverse z-index order (top to bottom)
     const sortedItems = [...canvasItems].sort((a, b) => b.transform.zIndex - a.transform.zIndex);
 
     for (const item of sortedItems) {
       const bounds = getTransformedBounds(item);
 
-      // Simple bounding box check for now
       if (x >= bounds.x && x <= bounds.x + bounds.width &&
         y >= bounds.y && y <= bounds.y + bounds.height) {
         return item;
@@ -262,6 +320,110 @@ const Canvas = () => {
     return null;
   }, [getTransformedBounds]);
 
+  // Check if point is on rotation handle
+  const getRotationHandle = useCallback((x: number, y: number, item: CanvasMediaItem): boolean => {
+    const bounds = getTransformedBounds(item);
+    const handleSize = 12;
+    const tolerance = 8;
+
+    // Calculate rotation handle position
+    const topCenter = {
+      x: (bounds.corners[0].x + bounds.corners[1].x) / 2,
+      y: (bounds.corners[0].y + bounds.corners[1].y) / 2
+    };
+
+    const dx = bounds.corners[1].x - bounds.corners[0].x;
+    const dy = bounds.corners[1].y - bounds.corners[0].y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    const normalX = -dy / length;
+    const normalY = dx / length;
+
+    const rotationHandleDistance = 30;
+    const rotationHandle = {
+      x: topCenter.x + normalX * rotationHandleDistance,
+      y: topCenter.y + normalY * rotationHandleDistance
+    };
+
+    const distance = Math.sqrt((x - rotationHandle.x) ** 2 + (y - rotationHandle.y) ** 2);
+    return distance <= (handleSize / 2 + tolerance);
+  }, [getTransformedBounds]);
+
+  // Global mouse event handlers for continuous interaction
+  const handleGlobalMouseMove = useCallback((e: MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !selectedCanvasItem) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    if (isResizing && resizeHandle && resizeStart) {
+      const centerX = resizeStart.centerX;
+      const centerY = resizeStart.centerY;
+
+      const currentDistanceFromCenter = Math.sqrt(
+        (mouseX - centerX) ** 2 + (mouseY - centerY) ** 2
+      );
+
+      const originalCornerDistance = Math.sqrt(
+        (resizeStart.width / 2) ** 2 + (resizeStart.height / 2) ** 2
+      ) * resizeStart.scale;
+
+      const newScale = Math.max(0.1, Math.min(5, currentDistanceFromCenter / originalCornerDistance * resizeStart.scale));
+
+      updateCanvasItemTransform(selectedCanvasItem.id, {
+        scale: newScale
+      });
+    } else if (isRotating && rotationStart && selectedCanvasItem) {
+      const centerX = rotationStart.centerX;
+      const centerY = rotationStart.centerY;
+
+      // Calculate angle from center to current mouse position
+      const currentAngle = Math.atan2(mouseY - centerY, mouseX - centerX) * 180 / Math.PI;
+
+      // Calculate angle from center to initial mouse position
+      const initialAngle = Math.atan2(rotationStart.mouseY - centerY, rotationStart.mouseX - centerX) * 180 / Math.PI;
+
+      // Calculate rotation delta
+      let deltaRotation = currentAngle - initialAngle;
+
+      // Normalize angle to [-180, 180]
+      while (deltaRotation > 180) deltaRotation -= 360;
+      while (deltaRotation < -180) deltaRotation += 360;
+
+      const newRotation = (rotationStart.rotation + deltaRotation) % 360;
+
+      updateCanvasItemTransform(selectedCanvasItem.id, {
+        rotation: newRotation
+      });
+    } else if (isDragging && dragStart) {
+      const deltaX = mouseX - dragStart.x;
+      const deltaY = mouseY - dragStart.y;
+
+      updateCanvasItemTransform(selectedCanvasItem.id, {
+        x: selectedCanvasItem.transform.x + deltaX,
+        y: selectedCanvasItem.transform.y + deltaY
+      });
+
+      setDragStart({ x: mouseX, y: mouseY });
+    }
+  }, [selectedCanvasItem, isResizing, isRotating, isDragging, resizeHandle, dragStart, resizeStart, rotationStart, updateCanvasItemTransform]);
+
+  const handleGlobalMouseUp = useCallback(() => {
+    setIsResizing(false);
+    setIsRotating(false);
+    setIsDragging(false);
+    setResizeHandle(null);
+    setDragStart(null);
+    setResizeStart(null);
+    setRotationStart(null);
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.style.cursor = 'default';
+    }
+  }, []);
+
   // Mouse event handlers
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -271,14 +433,28 @@ const Canvas = () => {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Check for resize handles first (if item is selected)
     if (selectedCanvasItem) {
+      // Check for rotation handle first
+      if (getRotationHandle(x, y, selectedCanvasItem)) {
+        setIsRotating(true);
+        const bounds = getTransformedBounds(selectedCanvasItem);
+        setRotationStart({
+          mouseX: x,
+          mouseY: y,
+          rotation: selectedCanvasItem.transform.rotation,
+          centerX: bounds.center.x,
+          centerY: bounds.center.y
+        });
+        e.preventDefault();
+        return;
+      }
+
+      // Check for resize handles
       const handle = getResizeHandle(x, y, selectedCanvasItem);
       if (handle) {
         setIsResizing(true);
         setResizeHandle(handle);
 
-        // Store initial resize state
         const bounds = getTransformedBounds(selectedCanvasItem);
         setResizeStart({
           mouseX: x,
@@ -309,7 +485,7 @@ const Canvas = () => {
 
     // Click on empty space - deselect
     selectCanvasItem('');
-  }, [selectedCanvasItem, getResizeHandle, getItemAtPoint, selectCanvasItem, getTransformedBounds]);
+  }, [selectedCanvasItem, getRotationHandle, getResizeHandle, getItemAtPoint, selectCanvasItem, getTransformedBounds]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -319,69 +495,11 @@ const Canvas = () => {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    if (isResizing && resizeHandle && resizeStart) {
-      // Handle resizing with proper scaling
-      // const deltaX = mouseX - resizeStart.mouseX;
-      // const deltaY = mouseY - resizeStart.mouseY;
-
-      // Calculate distance from original mouse position
-      // const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
-      // Determine resize direction based on handle and mouse movement
-      // const scaleFactor = 1;
-      const centerX = resizeStart.centerX;
-      const centerY = resizeStart.centerY;
-
-      // Calculate distance from center to current mouse position
-      const currentDistanceFromCenter = Math.sqrt(
-        (mouseX - centerX) ** 2 + (mouseY - centerY) ** 2
-      );
-
-      // Calculate original distance from center to handle
-      const originalCornerDistance = Math.sqrt(
-        (resizeStart.width / 2) ** 2 + (resizeStart.height / 2) ** 2
-      ) * resizeStart.scale;
-
-      // Calculate new scale based on distance ratio
-      const newScale = Math.max(0.1, Math.min(5, currentDistanceFromCenter / originalCornerDistance * resizeStart.scale));
-
-      // Apply constraint based on handle direction for more natural resizing
-      let constrainedScale = newScale;
-
-      switch (resizeHandle) {
-        case 'se': // Southeast - natural resize
-          constrainedScale = newScale;
-          break;
-        case 'nw': // Northwest - opposite corner
-          constrainedScale = newScale;
-          break;
-        case 'ne': // Northeast
-        case 'sw': // Southwest
-          constrainedScale = newScale;
-          break;
-      }
-
-      updateCanvasItemTransform(selectedCanvasItem.id, {
-        scale: constrainedScale
-      });
-
-    } else if (isDragging && dragStart) {
-      // Handle dragging
-      const deltaX = mouseX - dragStart.x;
-      const deltaY = mouseY - dragStart.y;
-
-      updateCanvasItemTransform(selectedCanvasItem.id, {
-        x: selectedCanvasItem.transform.x + deltaX,
-        y: selectedCanvasItem.transform.y + deltaY
-      });
-
-      setDragStart({ x: mouseX, y: mouseY });
-    }
-
     // Update cursor based on what's under mouse
-    if (!isResizing && !isDragging && selectedCanvasItem) {
-      const handle = getResizeHandle(mouseX, mouseY, selectedCanvasItem);
-      if (handle) {
+    if (!isResizing && !isRotating && !isDragging) {
+      if (getRotationHandle(mouseX, mouseY, selectedCanvasItem)) {
+        canvas.style.cursor = 'grab';
+      } else if (getResizeHandle(mouseX, mouseY, selectedCanvasItem)) {
         canvas.style.cursor = 'nw-resize';
       } else if (getItemAtPoint(mouseX, mouseY)) {
         canvas.style.cursor = 'move';
@@ -389,22 +507,7 @@ const Canvas = () => {
         canvas.style.cursor = 'default';
       }
     }
-
-  }, [selectedCanvasItem, isResizing, isDragging, resizeHandle, dragStart, resizeStart, updateCanvasItemTransform, getResizeHandle, getItemAtPoint]);
-
-  const handleMouseUp = useCallback(() => {
-    setIsResizing(false);
-    setIsDragging(false);
-    setResizeHandle(null);
-    setDragStart(null);
-    setResizeStart(null);
-
-    // Reset cursor
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.style.cursor = 'default';
-    }
-  }, []);
+  }, [selectedCanvasItem, isResizing, isRotating, isDragging, getRotationHandle, getResizeHandle, getItemAtPoint]);
 
   // Load media elements
   useEffect(() => {
@@ -416,7 +519,6 @@ const Canvas = () => {
           img.onload = () => {
             mediaElementsRef.current.set(item.id, img);
 
-            // Update transform with actual dimensions if not set properly
             if (item.transform.width === 300 && item.transform.height === 200) {
               const maxWidth = CANVAS_WIDTH * 0.3;
               const maxHeight = CANVAS_HEIGHT * 0.3;
@@ -451,7 +553,6 @@ const Canvas = () => {
             video.currentTime = 0.1;
             mediaElementsRef.current.set(item.id, video);
 
-            // Update transform with actual dimensions if not set properly
             if (item.transform.width === 300 && item.transform.height === 200) {
               const maxWidth = CANVAS_WIDTH * 0.3;
               const maxHeight = CANVAS_HEIGHT * 0.3;
@@ -481,7 +582,6 @@ const Canvas = () => {
       }
     });
 
-    // Clean up removed items
     const currentIds = new Set(canvasItems.map(item => item.id));
     const elementIds = Array.from(mediaElementsRef.current.keys());
 
@@ -491,6 +591,19 @@ const Canvas = () => {
       }
     });
   }, [canvasItems, updateCanvasItemTransform, drawCanvas]);
+
+  // Add global event listeners for continuous interaction
+  useEffect(() => {
+    if (isResizing || isRotating || isDragging) {
+      document.addEventListener('mousemove', handleGlobalMouseMove);
+      document.addEventListener('mouseup', handleGlobalMouseUp);
+
+      return () => {
+        document.removeEventListener('mousemove', handleGlobalMouseMove);
+        document.removeEventListener('mouseup', handleGlobalMouseUp);
+      };
+    }
+  }, [isResizing, isRotating, isDragging, handleGlobalMouseMove, handleGlobalMouseUp]);
 
   // Redraw when items change
   useEffect(() => {
@@ -507,7 +620,7 @@ const Canvas = () => {
     }
   }, [drawCanvas]);
 
-  // Export function
+  // Export function - without grid lines
   const exportCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -519,9 +632,10 @@ const Canvas = () => {
     tempCanvas.width = CANVAS_WIDTH;
     tempCanvas.height = CANVAS_HEIGHT;
 
-    // Clear and draw grid
+    // Clear canvas (no grid background)
     tempCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-    drawGrid(tempCtx);
+    tempCtx.fillStyle = '#ffffff'; // White background for export
+    tempCtx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Draw all items without handles
     const sortedItems = [...canvasItems].sort((a, b) => a.transform.zIndex - b.transform.zIndex);
@@ -533,7 +647,7 @@ const Canvas = () => {
     link.download = 'canvas-export.png';
     link.href = tempCanvas.toDataURL('image/png');
     link.click();
-  }, [canvasItems, drawGrid, drawMediaItem]);
+  }, [canvasItems, drawMediaItem]);
 
   return (
     <div className="flex-1 relative overflow-hidden bg-gray-900 flex flex-col items-center justify-center p-4">
@@ -543,14 +657,15 @@ const Canvas = () => {
           ref={canvasRef}
           className={`border-2 border-gray-600 bg-white shadow-lg ${isDragging ? 'cursor-move' :
             isResizing ? 'cursor-nw-resize' :
-              'cursor-crosshair'
+              isRotating ? 'cursor-grab' :
+                'cursor-crosshair'
             }`}
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+          onMouseUp={handleGlobalMouseUp}
+          onMouseLeave={() => { }} // Don't stop interactions when leaving canvas
         />
 
         {/* Canvas overlay info */}
@@ -559,7 +674,7 @@ const Canvas = () => {
             <div className="font-medium">{selectedCanvasItem.name}</div>
             <div className="text-xs text-gray-300">
               {selectedCanvasItem.type} • Scale: {Math.round(selectedCanvasItem.transform.scale * 100)}% •
-              Rotation: {selectedCanvasItem.transform.rotation}°
+              Rotation: {Math.round(selectedCanvasItem.transform.rotation)}°
             </div>
             <div className="text-xs text-gray-300">
               Position: ({Math.round(selectedCanvasItem.transform.x)}, {Math.round(selectedCanvasItem.transform.y)}) •
@@ -608,8 +723,8 @@ const Canvas = () => {
       {/* Instructions */}
       {canvasItems.length > 0 && (
         <div className="mt-2 text-center text-gray-500 text-xs">
-          <div>🔵 Blue squares: Resize handles • 🟢 Green dashed box: Rotated bounding box</div>
-          <div>Click to select • Drag to move • Drag handles to resize • Use sidebar for precise control</div>
+          <div>🔵 Blue squares: Resize • 🟡 Yellow circle: Rotate • 🟢 Green dashed box: Bounding box</div>
+          <div>Click to select • Drag to move • Interactions continue outside canvas area</div>
         </div>
       )}
     </div>
