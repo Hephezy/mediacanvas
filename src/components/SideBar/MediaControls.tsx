@@ -27,7 +27,8 @@ const MediaControls = () => {
   const { transform } = selectedCanvasItem;
 
   const handleScaleChange = (delta: number) => {
-    const newScale = Math.max(0.1, Math.min(3, transform.scale + delta));
+    // Removed upper limit - only prevent going below 0.05 (5%)
+    const newScale = Math.max(0.05, transform.scale + delta);
     updateCanvasItemTransform(selectedCanvasItem.id, { scale: newScale });
   };
 
@@ -91,7 +92,7 @@ const MediaControls = () => {
           <button
             onClick={() => handleScaleChange(-0.1)}
             className="flex-1 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded transition-colors flex items-center justify-center gap-2"
-            disabled={transform.scale <= 0.1}
+            disabled={transform.scale <= 0.05}
             title="Scale Down"
           >
             <ZoomOut className="h-4 w-4" />
@@ -100,7 +101,6 @@ const MediaControls = () => {
           <button
             onClick={() => handleScaleChange(0.1)}
             className="flex-1 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded transition-colors flex items-center justify-center gap-2"
-            disabled={transform.scale >= 3}
             title="Scale Up"
           >
             <ZoomIn className="h-4 w-4" />

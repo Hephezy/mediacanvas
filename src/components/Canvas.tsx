@@ -354,6 +354,7 @@ const Canvas = () => {
     if (!canvas || !selectedCanvasItem) return;
 
     const rect = canvas.getBoundingClientRect();
+    // Don't clamp coordinates - allow them to go beyond canvas bounds
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
@@ -418,10 +419,7 @@ const Canvas = () => {
     setResizeStart(null);
     setRotationStart(null);
 
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.style.cursor = 'default';
-    }
+    // Reset cursor will be handled by useEffect cleanup
   }, []);
 
   // Mouse event handlers
@@ -595,12 +593,24 @@ const Canvas = () => {
   // Add global event listeners for continuous interaction
   useEffect(() => {
     if (isResizing || isRotating || isDragging) {
+      // Set cursor style on document body to maintain cursor appearance
+      const originalCursor = document.body.style.cursor;
+
+      if (isResizing) {
+        document.body.style.cursor = 'nw-resize';
+      } else if (isRotating) {
+        document.body.style.cursor = 'grab';
+      } else if (isDragging) {
+        document.body.style.cursor = 'move';
+      }
+
       document.addEventListener('mousemove', handleGlobalMouseMove);
       document.addEventListener('mouseup', handleGlobalMouseUp);
 
       return () => {
         document.removeEventListener('mousemove', handleGlobalMouseMove);
         document.removeEventListener('mouseup', handleGlobalMouseUp);
+        document.body.style.cursor = originalCursor; // Restore original cursor
       };
     }
   }, [isResizing, isRotating, isDragging, handleGlobalMouseMove, handleGlobalMouseUp]);
@@ -660,12 +670,16 @@ const Canvas = () => {
               isRotating ? 'cursor-grab' :
                 'cursor-crosshair'
             }`}
+          style={{
+            cursor: isDragging ? 'move' :
+              isResizing ? 'nw-resize' :
+                isRotating ? 'grab' :
+                  'crosshair'
+          }}
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
-          onMouseUp={handleGlobalMouseUp}
-          onMouseLeave={() => { }} // Don't stop interactions when leaving canvas
         />
 
         {/* Canvas overlay info */}
